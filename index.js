@@ -162,34 +162,48 @@ function isAffirmative(text) {
 
 // ---------------------------------------------------------------------------
 // Blueticks API helpers
+//
+// IMPORTANT: The exact field names below (e.g. "text" vs "message", the
+// mark-read endpoint shape) are a best-effort guess based on available
+// documentation, which had some inconsistencies across sources. Before
+// relying on this in production:
+//   1. Check https://dev.blueticks.co/docs for the current, authoritative
+//      request/response shapes.
+//   2. Send one test message manually and check the Railway deploy logs
+//      to confirm the request succeeded (look for a 200, not a 400).
+//   3. Adjust the JSON.stringify(...) bodies below if the API rejects them.
 // ---------------------------------------------------------------------------
 
 async function sendText(chatId, text) {
-  return fetch(`${BLUETICKS_API_BASE}/messages`, {
+  return fetch(`${BLUETICKS_API_BASE}/scheduled-messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${API_KEY}`,
     },
-    body: JSON.stringify({ to: chatId, text }),
+    body: JSON.stringify({ action: "send", to: chatId, text }),
   });
 }
 
 async function sendMedia(chatId, mediaUrl) {
-  return fetch(`${BLUETICKS_API_BASE}/messages`, {
+  return fetch(`${BLUETICKS_API_BASE}/scheduled-messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${API_KEY}`,
     },
-    body: JSON.stringify({ to: chatId, media_url: mediaUrl }),
+    body: JSON.stringify({ action: "send", to: chatId, media_url: mediaUrl }),
   });
 }
 
 async function markRead(chatId) {
-  return fetch(`${BLUETICKS_API_BASE}/chats/${chatId}/read`, {
+  return fetch(`${BLUETICKS_API_BASE}/chats`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${API_KEY}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${API_KEY}`,
+    },
+    body: JSON.stringify({ action: "mark_read", chat_id: chatId }),
   });
 }
 
@@ -307,13 +321,25 @@ app.post("/webhook", async (req, res) => {
   try {
     const event = req.body;
 
-    // Adjust this parsing to match Blueticks' actual webhook payload shape.
-    // Common shape: { event: "message.received", data: { chatId, type, text, fromMe } }
-    if (event.event !== "message.received") {
+    // Blueticks' actual event name (confirmed via API error message):
+    // new_message_received_webhook — NOT "message.received".
+    // The exact payload field names inside `data`/`event` are NOT publicly
+    // documented, so this parsing is a best-effort guess. If the bot doesn't
+    // respond after deployment, log `JSON.stringify(event)` here, check the
+    // Railway deploy logs for the real shape of one incoming request, and
+    // adjust the destructuring below to match.
+    console.log("Webhook received:", JSON.stringify(event));
+
+    if (event.event !== "new_message_received_webhook" && event.type !== "new_message_received_webhook") {
       return res.sendStatus(200); // ignore other event types
     }
 
-    const { chatId, type, text, fromMe } = event.data || {};
+    const payload = event.data || event.payload || event;
+    const chatId = payload.chatId || payload.chat_id || payload.from;
+    const type = payload.type || payload.messageType || "chat";
+    const text = payload.text || payload.body || payload.message;
+    const fromMe = payload.fromMe || payload.from_me || false;
+
     if (!chatId || fromMe) {
       return res.sendStatus(200); // ignore our own outgoing messages
     }
