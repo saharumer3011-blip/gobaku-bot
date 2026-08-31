@@ -1,0 +1,16 @@
+{
+  "name": "gobaku-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Auto-reply bot for GoBaku travel WhatsApp inquiries",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
