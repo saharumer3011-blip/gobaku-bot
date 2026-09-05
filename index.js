@@ -47,6 +47,11 @@ const chatState = new Map();
 //   sentMenu: bool,
 //   sentPackageNumber: number|null,
 //   awaitingSatisfaction: bool,
+//   lastSendFailed: bool, // true if the most recent sendText/sendMedia to
+//                         // this chat got a non-2xx response (e.g. Blueticks
+//                         // outage) -- see recordSendResult() and the admin
+//                         // page, which surfaces this so a failed send isn't
+//                         // silently mistaken for a delivered one.
 // }
 
 // Tracks webhook event IDs already processed, to avoid double-replying if
@@ -135,6 +140,7 @@ function getState(chatId) {
       awaitingTravelInfo: false,
       travelInfo: { travelers: null, city: null, date: null },
       pausedByHuman: false,
+      lastSendFailed: false,
     });
   }
   return chatState.get(chatId);
@@ -313,6 +319,18 @@ function isShortConversationalReply(text) {
 //   3. Adjust the JSON.stringify(...) bodies below if the API rejects them.
 // ---------------------------------------------------------------------------
 
+// Records whether the last send attempt to a chat succeeded, so a silent
+// upstream failure (e.g. Blueticks returning 502 while our own logic still
+// thinks the conversation moved forward) shows up somewhere a human will
+// actually see it, instead of only in scrollback logs.
+function recordSendResult(chatId, ok, status, body) {
+  const state = getState(chatId);
+  if (!ok) {
+    console.error(`[SEND FAILED] to ${chatId} -- status ${status}: ${body}`);
+  }
+  state.lastSendFailed = !ok;
+}
+
 async function sendText(chatId, text) {
   const res = await fetch(`${BLUETICKS_API_BASE}/scheduled-messages/${chatId}`, {
     method: "POST",
@@ -324,6 +342,7 @@ async function sendText(chatId, text) {
   });
   const body = await res.text();
   console.log(`sendText -> status ${res.status}: ${body}`);
+  recordSendResult(chatId, res.ok, res.status, body);
   const msgId = extractMessageId(body);
   if (msgId) botSentMessageIds.add(msgId);
   return res;
@@ -340,6 +359,7 @@ async function sendMedia(chatId, mediaUrl) {
   });
   const body = await res.text();
   console.log(`sendMedia -> status ${res.status}: ${body}`);
+  recordSendResult(chatId, res.ok, res.status, body);
   const msgId = extractMessageId(body);
   if (msgId) botSentMessageIds.add(msgId);
   return res;
@@ -664,12 +684,23 @@ function normalizeChatId(input) {
 }
 
 function renderAdminPage(secret) {
-  const rows = Array.from(chatState.entries())
+  const entries = Array.from(chatState.entries());
+  // Chats whose last send failed (e.g. a Blueticks outage) float to the top --
+  // otherwise a handful of silently-undelivered replies get lost in a list of
+  // hundreds of normally-functioning chats.
+  entries.sort((a, b) => (b[1].lastSendFailed ? 1 : 0) - (a[1].lastSendFailed ? 1 : 0));
+  const failedCount = entries.filter(([, state]) => state.lastSendFailed).length;
+
+  const rows = entries
     .map(([chatId, state]) => {
       const paused = !!state.pausedByHuman;
+      const statusText = paused ? "🔴 Paused (human handling)" : "🟢 Bot active";
+      const failedWarning = state.lastSendFailed
+        ? ` <span style="color:#f66">⚠️ last send failed</span>`
+        : "";
       return `<tr>
         <td>${chatId}</td>
-        <td>${paused ? "🔴 Paused (human handling)" : "🟢 Bot active"}</td>
+        <td>${statusText}${failedWarning}</td>
         <td><button onclick="act('${paused ? "resume" : "pause"}','${chatId}')">${
         paused ? "Resume bot" : "Pause bot"
       }</button></td>
@@ -693,6 +724,11 @@ input{padding:9px;border-radius:6px;border:1px solid #444;background:#222;color:
 <body>
 <h1>GoBaku Bot — Chat Control</h1>
 <p>Pause a chat whenever a human is handling that client directly (e.g. answering a price negotiation), so the bot stops auto-replying there. Resume when you're done and want the bot back in charge.</p>
+${
+  failedCount > 0
+    ? `<p style="color:#f66;font-weight:600">⚠️ ${failedCount} chat(s) below had their last reply fail to send (e.g. a Blueticks outage) -- those clients may not have received a reply even though the bot tried.</p>`
+    : ""
+}
 <div class="row">
   <input id="chatIdInput" placeholder="Phone number or chat ID, e.g. 923001234567" />
   <button onclick="pauseManual()">Pause</button>
