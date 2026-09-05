@@ -757,11 +757,6 @@ app.post("/admin/:secret/resume", (req, res) => {
 // Health check endpoint (useful for hosting platforms)
 app.get("/", (req, res) => res.send("GoBaku bot is running."));
 
-loadPersistedState();
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Bot listening on port ${PORT}`));
-
 // Safety net: flush state one more time on graceful shutdown (this is what
 // Railway sends before killing the container during a redeploy). Since
 // persistState() now writes synchronously on every change already, this
@@ -772,5 +767,28 @@ function shutdown(signal) {
   persistState();
   process.exit(0);
 }
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Only start the server (and touch disk/signals) when run directly, not
+// when required by the test suite (see test/logic.test.js).
+if (require.main === module) {
+  loadPersistedState();
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Bot listening on port ${PORT}`));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+// Exported for unit testing (see test/logic.test.js). Pure functions only --
+// nothing here touches the network, the filesystem, or module-level state.
+module.exports = {
+  extractPackageNumber,
+  isVisaOrTicketQuestion,
+  isPricingQuestion,
+  isFreshInquiry,
+  isAffirmative,
+  isDetailsRequest,
+  isShortConversationalReply,
+  normalizeChatId,
+  travelInfoComplete,
+  nextMissingTravelInfoQuestion,
+};
