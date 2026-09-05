@@ -25,6 +25,14 @@ Log into your Blueticks dashboard and find your API key under account/API settin
 npm install
 ```
 
+### 2b. Run the tests (optional but recommended)
+```bash
+npm test
+```
+Checks the message-classification logic (package number extraction, visa/pricing
+detection, etc.) without needing a live Blueticks connection. Runs automatically
+on every push/PR via GitHub Actions too.
+
 ### 3. Set environment variables
 Create a `.env` file or set these in your hosting platform's dashboard:
 ```
