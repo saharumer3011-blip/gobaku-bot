@@ -427,51 +427,16 @@ async function handleIncomingMessage(chatId, messageType, text) {
   }
 
 
-  // 3) Currently collecting travel info (city/travelers/date) — do NOT stop
-  // early. Try to extract whichever piece this message answers, then ask
-  // for whatever's still missing instead of ending the conversation.
+  // 3) The bot does NOT run a back-and-forth travel-info interview anymore.
+  // Its whole job for a conversation is the one-shot in rule 4 (menu +
+  // travel-info question), after which pausedByHuman is set and a human
+  // takes it from there. We used to loop here asking "how many travelers?" /
+  // "which city?" one at a time, but it misread ordinary answers ("only me",
+  // "one traveler") and re-asked the same question over and over. If a chat
+  // still has awaitingTravelInfo set (from old saved state or rule 5), just
+  // leave the client's reply for a human -- don't send anything.
   if (state.awaitingTravelInfo) {
-    // Check each line separately so a multi-line answer like
-    // "Multan\n2\n12sep" (city + travelers + date all at once) is fully
-    // captured, instead of only grabbing the first thing that matches.
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const dateWordRe = /(\d{1,2}\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(\s*\d{1,2})?|\b\d{1,2}\/\d{1,2}\b|\b\d{4}\b/i;
-    const travelerRe = /\b(\d+)\s*(travel?ers?|people|persons?|adults?|pax)?\b/i;
-
-    for (const line of lines) {
-      if (!state.travelInfo.date && dateWordRe.test(line)) {
-        state.travelInfo.date = line;
-        continue;
-      }
-      if (!state.travelInfo.travelers && travelerRe.test(line)) {
-        state.travelInfo.travelers = line.match(travelerRe)[1];
-        continue;
-      }
-      if (
-        !state.travelInfo.city &&
-        /^[a-zA-Z\s]{2,30}$/.test(line) &&
-        !isVisaOrTicketQuestion(line)
-      ) {
-        state.travelInfo.city = line;
-        continue;
-      }
-    }
-
-    const nextQuestion = nextMissingTravelInfoQuestion(state);
-    if (nextQuestion) {
-      await sendText(chatId, nextQuestion);
-      await markRead(chatId);
-      return;
-    }
-
-    // All three collected — confirm and hand off, only now.
-    state.awaitingTravelInfo = false;
-    const { travelers, city, date } = state.travelInfo;
-    await sendText(
-      chatId,
-      `Perfect — ${travelers} traveler(s) from ${city}, traveling around ${date}. Our team will follow up shortly with the full itinerary and pricing. Please note flights and visa aren't included, but we can arrange both if you'd like.`
-    );
-    await markRead(chatId);
+    console.log(`[FLAG FOR HUMAN] awaitingTravelInfo chat=${chatId} text="${text}"`);
     return;
   }
 
@@ -515,11 +480,12 @@ async function handleIncomingMessage(chatId, messageType, text) {
   }
 
   // 5) Visa / ticket / inclusions / pricing question from an already-active
-  // chat (e.g. one a human manually resumed) -> start collecting travel info.
+  // chat (e.g. one a human manually resumed) -> send the travel-info question
+  // ONCE, then hand back to a human. No follow-up interview (see rule 3).
   // Unreachable for a genuinely new client, since rule 4 above already
   // handles their very first message regardless of phrasing.
   if (isVisaOrTicketQuestion(text) || isPricingQuestion(text)) {
-    state.awaitingTravelInfo = true;
+    state.pausedByHuman = true;
     await sendText(chatId, TRAVEL_INFO_QUESTION);
     await markRead(chatId);
     return;
