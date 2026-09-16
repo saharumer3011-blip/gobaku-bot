@@ -396,8 +396,12 @@ async function handleIncomingMessage(chatId, messageType, text) {
   // Rule: voice message after the promo -> send package list
   if (messageType === "ptt" || messageType === "audio") {
     if (!state.sentMenu) {
-      await sendText(chatId, PACKAGE_MENU);
+      // Claim + persist BEFORE awaiting the send (see the big note on rule 4
+      // below for why: otherwise a crash/restart while Blueticks is slow to
+      // respond forgets this ever happened, and a webhook retry re-sends).
       state.sentMenu = true;
+      persistState();
+      await sendText(chatId, PACKAGE_MENU);
     }
     await markRead(chatId);
     return;
@@ -409,8 +413,9 @@ async function handleIncomingMessage(chatId, messageType, text) {
     // gotten the menu, send it as a safe default. Otherwise leave it for
     // a human to look at.
     if (!state.sentMenu) {
-      await sendText(chatId, PACKAGE_MENU);
       state.sentMenu = true;
+      persistState();
+      await sendText(chatId, PACKAGE_MENU);
     }
     await markRead(chatId);
     return;
@@ -421,6 +426,7 @@ async function handleIncomingMessage(chatId, messageType, text) {
   console.log(`extractPackageNumber("${text}") -> ${pkgNum}, alreadyPicked=${state.sentPackageNumber}`);
   if (pkgNum && PACKAGE_PDFS[pkgNum] && !state.sentPackageNumber) {
     state.sentPackageNumber = pkgNum; // claim before awaiting — see race-condition note above
+    persistState(); // ...and persist it before awaiting too, same reasoning as rule 4 below
     await sendMedia(chatId, PACKAGE_PDFS[pkgNum]);
     await markRead(chatId);
     return;
@@ -470,9 +476,24 @@ async function handleIncomingMessage(chatId, messageType, text) {
     // first finishes -- setting these flags first ensures the second call
     // sees sentMenu/pausedByHuman already true and skips, instead of both
     // independently sending the full menu + travel-info question twice.
+    //
+    // We also persistState() right here, before either send -- not after,
+    // like the rest of the handler does via the webhook route's finally
+    // block. Blueticks' send API is known to be slow/flaky (occasional 502s
+    // -- see the admin page's send-failure tracking), and if the process
+    // crashes or gets restarted while awaiting one of those slow sends, the
+    // in-memory flags above are lost. On restart, loadPersistedState() would
+    // reload the OLD (sentMenu: false) state, and if Blueticks retries the
+    // webhook delivery (as it does when a request doesn't get a timely
+    // response), the bot reprocesses it as a brand-new first message and
+    // sends the whole menu again. A client seeing this reported getting the
+    // package list four times in a row -- this closes that window by making
+    // sure "we already started replying to this chat" hits disk before we
+    // ever await Blueticks.
     state.sentMenu = true;
     state.awaitingTravelInfo = true;
     state.pausedByHuman = true;
+    persistState();
     await sendText(chatId, PACKAGE_MENU);
     await sendText(chatId, TRAVEL_INFO_QUESTION);
     await markRead(chatId);
@@ -486,6 +507,7 @@ async function handleIncomingMessage(chatId, messageType, text) {
   // handles their very first message regardless of phrasing.
   if (isVisaOrTicketQuestion(text) || isPricingQuestion(text)) {
     state.pausedByHuman = true;
+    persistState(); // see the crash-window note on rule 4 above
     await sendText(chatId, TRAVEL_INFO_QUESTION);
     await markRead(chatId);
     return;
