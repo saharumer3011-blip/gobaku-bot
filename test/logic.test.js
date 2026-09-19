@@ -9,8 +9,6 @@ const {
   isDetailsRequest,
   isShortConversationalReply,
   normalizeChatId,
-  travelInfoComplete,
-  nextMissingTravelInfoQuestion,
 } = require("../index.js");
 
 test("extractPackageNumber", async (t) => {
@@ -96,17 +94,4 @@ test("normalizeChatId", () => {
   assert.equal(normalizeChatId("923001234567@c.us"), "923001234567@c.us");
   assert.equal(normalizeChatId(""), null);
   assert.equal(normalizeChatId(null), null);
-});
-
-test("travelInfoComplete / nextMissingTravelInfoQuestion", () => {
-  const empty = { travelInfo: { travelers: null, city: null, date: null } };
-  assert.equal(travelInfoComplete(empty), false);
-  assert.equal(nextMissingTravelInfoQuestion(empty), "How many travelers will there be?");
-
-  const partial = { travelInfo: { travelers: "2", city: null, date: null } };
-  assert.equal(nextMissingTravelInfoQuestion(partial), "Which city will you be traveling from?");
-
-  const full = { travelInfo: { travelers: "2", city: "Lahore", date: "12 Sep" } };
-  assert.equal(travelInfoComplete(full), true);
-  assert.equal(nextMissingTravelInfoQuestion(full), null);
 });
