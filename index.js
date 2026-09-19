@@ -137,24 +137,11 @@ function getState(chatId) {
       sentMenu: false,
       sentPackageNumber: null,
       awaitingSatisfaction: false,
-      awaitingTravelInfo: false,
-      travelInfo: { travelers: null, city: null, date: null },
       pausedByHuman: false,
       lastSendFailed: false,
     });
   }
   return chatState.get(chatId);
-}
-
-function travelInfoComplete(state) {
-  return !!(state.travelInfo.travelers && state.travelInfo.city && state.travelInfo.date);
-}
-
-function nextMissingTravelInfoQuestion(state) {
-  if (!state.travelInfo.travelers) return "How many travelers will there be?";
-  if (!state.travelInfo.city) return "Which city will you be traveling from?";
-  if (!state.travelInfo.date) return "What's your preferred travel date or month?";
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,13 +158,6 @@ const PACKAGE_MENU = `Thank you for your interest! Here are our available Baku p
 7️⃣ 9N/10D Package
 
 Please confirm which package and number of travelers, and we'll send the full itinerary and pricing right away!`;
-
-const TRAVEL_INFO_QUESTION = `A few quick questions so I can share the exact total:
-Which city will you be traveling from?
-How many travelers?
-Preferred travel date/month?
-
-Please note: flights and visa are not included in the packages, but we can arrange both for you if you'd like.`;
 
 const SATISFACTION_QUESTION = `Are you satisfied with this package?`;
 
@@ -433,33 +413,15 @@ async function handleIncomingMessage(chatId, messageType, text) {
   }
 
 
-  // 3) The bot does NOT run a back-and-forth travel-info interview anymore.
-  // Its whole job for a conversation is the one-shot in rule 4 (menu +
-  // travel-info question), after which pausedByHuman is set and a human
-  // takes it from there. We used to loop here asking "how many travelers?" /
-  // "which city?" one at a time, but it misread ordinary answers ("only me",
-  // "one traveler") and re-asked the same question over and over. If a chat
-  // still has awaitingTravelInfo set (from old saved state or rule 5), just
-  // leave the client's reply for a human -- don't send anything.
-  if (state.awaitingTravelInfo) {
-    console.log(`[FLAG FOR HUMAN] awaitingTravelInfo chat=${chatId} text="${text}"`);
-    return;
-  }
-
-  // 4) Fresh inquiry / hasn't gotten the menu yet -> send the package list
-  // AND the travel-info question together, right away. This is now the
-  // bot's entire job for a new conversation: after this one exchange, hand
-  // off to a human immediately (pausedByHuman = true) -- no satisfaction
-  // question, no waiting for a package number first. A human can still
-  // manually resume the bot for this chat later from the admin page if
-  // that's ever wanted (e.g. to let it keep collecting travel info).
-  //
-  // IMPORTANT: this check comes BEFORE the visa/pricing-question rule
-  // below. If a brand-new client's very first message happens to be
-  // phrased like a pricing question ("what's the price for a package?"),
-  // we still want the full menu + travel-info combo sent, not just the
-  // travel-info question alone -- every first contact gets the same
-  // one-shot response no matter how it's worded.
+  // 4) Fresh inquiry / hasn't gotten the menu yet -> send the package list,
+  // then hand off to a human immediately (pausedByHuman = true). The bot no
+  // longer sends a travel-info question (city/travelers/date) at all -- it
+  // was a repeat source of trouble: it looped asking "how many travelers?"
+  // forever on ordinary answers like "only me", and it kept firing (rule 5,
+  // now removed) even while a human was actively mid-conversation with the
+  // client, since the bot has no built-in way to know that without the
+  // Blueticks "Sent by Me" webhook enabled. Sending just the menu, once, is
+  // simpler and can't collide with a human handling the rest.
   //
   // Trigger is simply "hasn't gotten the menu yet" (!state.sentMenu). We
   // deliberately do NOT also re-trigger this on isFreshInquiry() keywords
@@ -470,51 +432,30 @@ async function handleIncomingMessage(chatId, messageType, text) {
   // packages?"), which was wrongly resending the full menu mid-conversation.
   // Persistence + pausedByHuman are now the actual safety net instead.
   if (!state.sentMenu && !isShortConversationalReply(text)) {
-    // Claim this state transition BEFORE sending anything. If two messages
-    // arrive from the same client almost simultaneously, awaiting the sends
-    // below gives Node a chance to start handling the second one before the
-    // first finishes -- setting these flags first ensures the second call
-    // sees sentMenu/pausedByHuman already true and skips, instead of both
-    // independently sending the full menu + travel-info question twice.
-    //
-    // We also persistState() right here, before either send -- not after,
-    // like the rest of the handler does via the webhook route's finally
-    // block. Blueticks' send API is known to be slow/flaky (occasional 502s
-    // -- see the admin page's send-failure tracking), and if the process
-    // crashes or gets restarted while awaiting one of those slow sends, the
-    // in-memory flags above are lost. On restart, loadPersistedState() would
-    // reload the OLD (sentMenu: false) state, and if Blueticks retries the
-    // webhook delivery (as it does when a request doesn't get a timely
-    // response), the bot reprocesses it as a brand-new first message and
-    // sends the whole menu again. A client seeing this reported getting the
-    // package list four times in a row -- this closes that window by making
-    // sure "we already started replying to this chat" hits disk before we
-    // ever await Blueticks.
+    // Claim this state transition BEFORE sending anything, and persist it
+    // immediately -- not after, like the rest of the handler does via the
+    // webhook route's finally block. Blueticks' send API is known to be
+    // slow/flaky (occasional 502s -- see the admin page's send-failure
+    // tracking), and if the process crashes or gets restarted while
+    // awaiting a slow send, in-memory flags set but not yet persisted are
+    // lost. On restart, loadPersistedState() would reload the OLD
+    // (sentMenu: false) state, and if Blueticks retries the webhook
+    // delivery (as it does when a request doesn't get a timely response),
+    // the bot reprocesses it as a brand-new first message and sends the
+    // menu again -- a client reported getting it four times in a row this
+    // way. Persisting before the await closes that window.
     state.sentMenu = true;
-    state.awaitingTravelInfo = true;
     state.pausedByHuman = true;
     persistState();
     await sendText(chatId, PACKAGE_MENU);
-    await sendText(chatId, TRAVEL_INFO_QUESTION);
     await markRead(chatId);
     return;
   }
 
-  // 5) Visa / ticket / inclusions / pricing question from an already-active
-  // chat (e.g. one a human manually resumed) -> send the travel-info question
-  // ONCE, then hand back to a human. No follow-up interview (see rule 3).
-  // Unreachable for a genuinely new client, since rule 4 above already
-  // handles their very first message regardless of phrasing.
-  if (isVisaOrTicketQuestion(text) || isPricingQuestion(text)) {
-    state.pausedByHuman = true;
-    persistState(); // see the crash-window note on rule 4 above
-    await sendText(chatId, TRAVEL_INFO_QUESTION);
-    await markRead(chatId);
-    return;
-  }
-
-  // 6) Nothing matched confidently — leave unread for a human to handle.
-  // (Do NOT mark read, so it stays visible as needing attention.)
+  // 5) Nothing matched confidently — leave unread for a human to handle.
+  // (Do NOT mark read, so it stays visible as needing attention.) This also
+  // covers visa/pricing questions and any awaitingTravelInfo leftovers from
+  // old saved state -- the bot doesn't auto-reply to those anymore either.
   console.log(`[FLAG FOR HUMAN] chat=${chatId} text="${text}"`);
 }
 
@@ -813,6 +754,4 @@ module.exports = {
   isDetailsRequest,
   isShortConversationalReply,
   normalizeChatId,
-  travelInfoComplete,
-  nextMissingTravelInfoQuestion,
 };
